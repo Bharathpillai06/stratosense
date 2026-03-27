@@ -72,29 +72,112 @@ def fetch_station_data(serial: str):
         print(f"Fetch error: {e}")
         return {}
     
-# Note -- if we end up actually using this (data assimilation), update to ensure accuracy
+ASSIMILATION_VARS = [
+    'air_temp', 'dew_point_temperature',
+    'sea_level_pressure', 'wind_speed', 'wind_direction',
+]
+
+
 def fetch_station_timeseries(serial: str, recent_minutes: int = 120, variables: list = None):
+    """
+    Fetch time-series observations from the Synoptic v2 API.
+
+    Defaults to the five variables the assimilation pipeline needs.
+    Validates the response structure and returns {} on any failure.
+    """
+    if variables is None:
+        variables = ASSIMILATION_VARS
+
     try:
-        print(f"Fetching timeseries data for station {serial}, last {recent_minutes} minutes")
         params = {
             'token': SYNOPTIC_TOKEN,
             'stid': serial,
-            'recent': recent_minutes
+            'recent': recent_minutes,
+            'vars': ','.join(variables),
         }
-        if variables:
-            params['vars'] = ','.join(variables)
-        
+
         response = requests.get(
-            f"https://api.synopticdata.com/v2/stations/timeseries",
+            'https://api.synopticdata.com/v2/stations/timeseries',
             params=params,
-            timeout=30
+            timeout=30,
         )
+        response.raise_for_status()
         data = response.json()
-        print(f"Got timeseries data for station {serial}")
+
+        summary = data.get('SUMMARY', {})
+        if summary.get('RESPONSE_CODE') != 1:
+            print(f"Synoptic API error for {serial}: "
+                  f"{summary.get('RESPONSE_MESSAGE', 'unknown')}")
+            return {}
+
+        if not data.get('STATION'):
+            print(f"No station records returned for {serial}")
+            return {}
+
         return data
-    except Exception as e:
-        print(f"Fetch error: {e}")
+    except requests.exceptions.Timeout:
+        print(f"Timeout fetching timeseries for {serial}")
         return {}
+    except requests.exceptions.RequestException as e:
+        print(f"Request error fetching timeseries for {serial}: {e}")
+        return {}
+    except (ValueError, KeyError) as e:
+        print(f"Parse error for {serial} timeseries: {e}")
+        return {}
+
+
+def parse_timeseries_for_assimilation(raw):
+    """
+    Turn a Synoptic v2 timeseries response into a flat list of dicts
+    suitable for the assimilation nudging pipeline.
+
+    Each entry: {
+        'datetime_utc': str,  'temp_c': float|None,
+        'dewpoint_c': float|None, 'pressure_hpa': float|None,
+        'wind_speed_ms': float|None, 'wind_dir_deg': float|None,
+        'elev_m': float
+    }
+    """
+    try:
+        station = raw['STATION'][0]
+    except (KeyError, IndexError, TypeError):
+        return []
+
+    obs = station.get('OBSERVATIONS', {})
+    timestamps = obs.get('date_time', [])
+    if not timestamps:
+        return []
+
+    temps = obs.get('air_temp_set_1', [])
+    dewpoints = obs.get('dew_point_temperature_set_1', [])
+    pressures = obs.get('sea_level_pressure_set_1', [])
+    winds = obs.get('wind_speed_set_1', [])
+    wind_dirs = obs.get('wind_direction_set_1', [])
+    elev = float(station.get('ELEVATION', 247))
+
+    def safe_float(lst, idx):
+        try:
+            v = lst[idx]
+            return float(v) if v is not None else None
+        except (IndexError, TypeError, ValueError):
+            return None
+
+    records = []
+    for i, ts in enumerate(timestamps):
+        temp = safe_float(temps, i)
+        if temp is None:
+            continue
+        records.append({
+            'datetime_utc': ts,
+            'temp_c': temp,
+            'dewpoint_c': safe_float(dewpoints, i),
+            'pressure_hpa': safe_float(pressures, i),
+            'wind_speed_ms': safe_float(winds, i),
+            'wind_dir_deg': safe_float(wind_dirs, i),
+            'elev_m': elev,
+        })
+
+    return records
 
 # ─── SONDEHUB FETCH ──────────────────────────────────────────────────────────
 def fetch_all_balloons():
@@ -569,7 +652,13 @@ def get_weather_timeseries(stid):
     if not data:
         return jsonify({"error": "No weather data found for station"}), 404
 
-    return jsonify(data)
+    parsed = parse_timeseries_for_assimilation(data)
+
+    return jsonify({
+        'raw': data,
+        'parsed': parsed,
+        'observation_count': len(parsed),
+    })
 
 
 @app.route("/weather/stations/search")
