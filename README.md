@@ -62,7 +62,7 @@ Dependencies are listed in [frontend/package.json](frontend/package.json). Key p
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/Bharathpillai06/stratosense.git
+git clone https://github.com/rishivarshil/stratosense.git
 cd stratosense
 ```
 
@@ -109,7 +109,7 @@ cd src
 python data_pipeline.py
 ```
 
-The API starts on `http://localhost:8080`. On first run it fetches active balloons from SondeHub and begins a 30-second polling loop in the background.
+The API starts on `http://127.0.0.1:8080`. On first run it fetches active balloons from SondeHub and begins a 30-second polling loop in the background.
 
 ### 5. Install frontend dependencies
 
