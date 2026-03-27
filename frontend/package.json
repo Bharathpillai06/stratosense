@@ -15,7 +15,8 @@
     "chartjs-plugin-zoom": "^2.2.0",
     "react": "^19.2.4",
     "react-chartjs-2": "^5.3.1",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "three": "^0.183.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
