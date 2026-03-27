@@ -17,12 +17,14 @@ const TABS = [
 
 export default function DashboardPage() {
   const [serialInput, setSerialInput] = useState('');
-  const [activeSerial, setActiveSerial] = useState(null);
+  const [activeSource, setActiveSource] = useState('balloon');
+  const [activeId, setActiveId] = useState(null);
   const [serverStatus, setServerStatus] = useState(null);
   const [activeTab, setActiveTab] = useState('3d');
   const [flightFrames, setFlightFrames] = useState(null);
   const [scrubIndex, setScrubIndex] = useState(0);
   const [analysis, setAnalysis] = useState(null);
+  const activeSerial = activeSource === 'balloon' ? activeId : null;
 
   useEffect(() => {
     fetch('/status')
@@ -36,11 +38,24 @@ export default function DashboardPage() {
       const serial = e.detail?.serial;
       if (serial) {
         setSerialInput(serial);
-        setActiveSerial(serial);
+        setActiveSource('balloon');
+        setActiveId(serial);
+      }
+    }
+    function onStationSelected(e) {
+      const stid = e.detail?.stid;
+      if (stid) {
+        setSerialInput(stid);
+        setActiveSource('station');
+        setActiveId(stid);
       }
     }
     document.addEventListener('balloonSelected', onBalloonSelected);
-    return () => document.removeEventListener('balloonSelected', onBalloonSelected);
+    document.addEventListener('stationSelected', onStationSelected);
+    return () => {
+      document.removeEventListener('balloonSelected', onBalloonSelected);
+      document.removeEventListener('stationSelected', onStationSelected);
+    };
   }, []);
 
   const loadFlightData = useCallback(async (serial) => {
@@ -81,7 +96,10 @@ export default function DashboardPage() {
   function handleLoad(e) {
     e.preventDefault();
     const trimmed = serialInput.trim();
-    if (trimmed) setActiveSerial(trimmed);
+    if (trimmed) {
+      setActiveSource('balloon');
+      setActiveId(trimmed);
+    }
   }
 
   const online = serverStatus?.status === 'running';
@@ -144,9 +162,9 @@ export default function DashboardPage() {
                 Load
               </button>
             </form>
-            {activeSerial && (
+            {activeId && (
               <span className="active-serial-display">
-                <strong>{activeSerial}</strong>
+                <strong>{activeSource === 'station' ? `${activeId} (station)` : activeSerial}</strong>
               </span>
             )}
           </div>
@@ -181,7 +199,7 @@ export default function DashboardPage() {
               className="tab-panel"
               style={{ display: activeTab === 'sounding' ? 'block' : 'none' }}
             >
-              <SoundingChart serial={activeSerial} />
+              <SoundingChart source={activeSource} id={activeId} />
             </div>
 
             <div

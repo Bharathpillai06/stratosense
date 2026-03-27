@@ -179,6 +179,18 @@ def parse_timeseries_for_assimilation(raw):
 
     return records
 
+
+def estimate_relative_humidity(temp_c, dewpoint_c):
+    if temp_c is None or dewpoint_c is None:
+        return None
+    try:
+        # Convert T/Td to RH (%) using Magnus approximation.
+        expo = ((17.625 * dewpoint_c) / (243.04 + dewpoint_c)) - ((17.625 * temp_c) / (243.04 + temp_c))
+        rh = 100.0 * math.exp(expo)
+        return max(0.0, min(100.0, round(rh, 2)))
+    except Exception:
+        return None
+
 # ─── SONDEHUB FETCH ──────────────────────────────────────────────────────────
 def fetch_all_balloons():
     try:
@@ -686,6 +698,69 @@ def search_weather_stations():
         stations = [s for s in stations if s.get('STATE') == query.upper()]
 
     return jsonify({"stations": stations[:limit]})
+
+
+@app.route("/station/<stid>/profile")
+def get_station_profile(stid):
+    if not SYNOPTIC_TOKEN:
+        return jsonify({"error": "Synoptic Data not configured. Set SYNOPTIC_TOKEN environment variable."}), 503
+
+    raw = fetch_station_timeseries(stid, recent_minutes=180)
+    if not raw:
+        return jsonify({"error": "No weather data found for station"}), 404
+
+    parsed = parse_timeseries_for_assimilation(raw)
+    station = (raw.get('STATION') or [{}])[0]
+    lat = station.get('LATITUDE')
+    lon = station.get('LONGITUDE')
+
+    path = []
+    for obs in parsed:
+        temp_c = obs.get('temp_c')
+        elev_m = obs.get('elev_m')
+        if temp_c is None or elev_m is None:
+            continue
+        path.append({
+            "lat": lat,
+            "lon": lon,
+            "alt": elev_m,
+            "temp": temp_c,
+            "humidity": estimate_relative_humidity(temp_c, obs.get('dewpoint_c')),
+            "datetime": obs.get('datetime_utc'),
+            "vel_v": None,
+        })
+
+    if not path:
+        return jsonify({"error": "No valid station profile points"}), 404
+
+    return jsonify({
+        "serial": stid,
+        "point_count": len(path),
+        "path": path,
+        "source": "synoptic_station",
+    })
+
+
+@app.route("/station/<stid>/analysis")
+def get_station_analysis(stid):
+    if not SYNOPTIC_TOKEN:
+        return jsonify({"error": "Synoptic Data not configured. Set SYNOPTIC_TOKEN environment variable."}), 503
+
+    return jsonify({
+        "serial": stid,
+        "frame_count": 0,
+        "lapse_rate_c_per_km": None,
+        "tropopause_alt_m": None,
+        "tropopause_alt_km": None,
+        "cape": None,
+        "cin": None,
+        "storm_risk": "not_applicable_surface_station",
+        "precipitable_water_mm": None,
+        "wind_profile": [],
+        "surface_temp": None,
+        "max_alt": None,
+        "sonde_type": "synoptic_station",
+    })
 
 
 @app.route("/status")

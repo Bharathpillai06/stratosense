@@ -42,7 +42,9 @@ function subsample(arr, maxLen) {
   return result;
 }
 
-export default function SoundingChart({ serial }) {
+export default function SoundingChart({ source = 'balloon', id = null, serial = null }) {
+  const selectedId = id ?? serial;
+  const isStation = source === 'station';
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const intervalRef = useRef(null);
@@ -54,7 +56,7 @@ export default function SoundingChart({ serial }) {
   const [liveCount, setLiveCount] = useState(0);
 
   useEffect(() => {
-    if (!serial) return;
+    if (!selectedId) return;
 
     let cancelled = false;
 
@@ -87,8 +89,8 @@ export default function SoundingChart({ serial }) {
 
       try {
         const [pathRes, analysisRes] = await Promise.all([
-          fetch(`/balloon/${serial}`),
-          fetch(`/balloon/${serial}/analysis`),
+          fetch(isStation ? `/station/${selectedId}/profile` : `/balloon/${selectedId}`),
+          fetch(isStation ? `/station/${selectedId}/analysis` : `/balloon/${selectedId}/analysis`),
         ]);
 
         if (!pathRes.ok) throw new Error(`Path fetch failed: ${pathRes.status}`);
@@ -247,8 +249,12 @@ export default function SoundingChart({ serial }) {
             }
 
             if (!cancelled) {
-              setStatus('live');
-              startLivePolling(chart, serial, tropopauseKm);
+              if (isStation) {
+                setStatus('done');
+              } else {
+                setStatus('live');
+                startLivePolling(chart, selectedId, tropopauseKm);
+              }
             }
             return;
           }
@@ -362,7 +368,7 @@ export default function SoundingChart({ serial }) {
       cancelled = true;
       cleanup();
     };
-  }, [serial]);
+  }, [selectedId, isStation]);
 
   const pct = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
 
@@ -370,7 +376,7 @@ export default function SoundingChart({ serial }) {
     <div className="sounding-chart-container">
       <div className="chart-header">
         <h2>Sounding Chart</h2>
-        {serial && <span className="serial-tag">{serial}</span>}
+        {selectedId && <span className="serial-tag">{selectedId}{isStation ? ' (station)' : ''}</span>}
         {status === 'animating' && (
           <span className="progress-badge">
             {progress.current}/{progress.total} frames ({pct}%)
@@ -397,9 +403,9 @@ export default function SoundingChart({ serial }) {
         </div>
       )}
 
-      {status === 'idle' && !serial && (
+      {status === 'idle' && !selectedId && (
         <div className="chart-overlay">
-          <p>Select a balloon to view its sounding profile</p>
+          <p>Select a balloon or ground station to view its profile</p>
         </div>
       )}
 
