@@ -315,6 +315,10 @@ export default function AltitudeColumn({ frames, scrubIndex, analysis, serial })
         const midR = EARTH_R + (layer.minKm + layer.maxKm) / 2 * ATM_S;
         for (let i = 0; i < 4; i++) {
           const basePhi = 0.1 + (i / 3) * (Math.PI / 2 - 0.15);
+          // Keep streams away from the absolute top, and randomly drop some to reduce clutter.
+          if (basePhi <= 0.35) continue;
+          if (Math.random() < 0.45) continue;
+
           const phase   = Math.random() * Math.PI * 2;
           const amp     = 0.04 + Math.random() * 0.06;
           const waveN   = 3 + Math.floor(Math.random() * 4);
