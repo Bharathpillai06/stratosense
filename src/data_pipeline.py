@@ -1,13 +1,25 @@
 import requests
 import math
 import json
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_socketio import SocketIO
 from datetime import datetime, timezone
 import threading
 import time
+import os
+from dotenv import load_dotenv
+
+# Auto-load environment variables from .env in repository root
+load_dotenv()
+SYNOPTIC_TOKEN = os.getenv("SYNOPTIC_TOKEN")
+
+# Person 4: atmospheric model + SDR blueprints
+from atmosphere import atmosphere_bp
+from sdr_integration import sdr_bp
 
 app = Flask(__name__)
+app.register_blueprint(atmosphere_bp)
+app.register_blueprint(sdr_bp)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # ─── CACHE ───────────────────────────────────────────────────────────────────
@@ -15,6 +27,157 @@ cache = {
     "balloons": {},
     "last_updated": None
 }
+
+# --- SYNOPTIC FETCH ----------------------------------------------------------
+def search_stations(lat: float = None, long: float = None, radius: float = None, network: int = None):
+    try:
+        params = {'token': SYNOPTIC_TOKEN, 'status': 'active'}
+        
+        # Add radius search parameters if all are provided
+        if lat is not None and long is not None and radius is not None and radius > 0:
+            print(f"Searching for stations at ({lat}, {long}) within radius {radius}")
+            params['radius'] = f'{lat},{long},{radius}'
+        else:
+            print("Searching for stations (no radius specified)")
+        
+        # Add network filter if provided
+        if network is not None and network > 0:
+            params['mnet'] = network
+        
+        response = requests.get(
+            f"https://api.synopticdata.com/v2/stations/metadata",
+            params=params,
+            timeout=30
+        )
+        data = response.json()
+        print(f"Got {len(data)} active stations")
+        return data
+    except Exception as e:
+        print(f"Fetch error: {e}")
+        return {}
+    
+def fetch_station_data(serial: str):
+    try:
+        print(f"Fetching data for station {serial}")
+        response = requests.get(
+            f"https://api.synopticdata.com/v2/stations/latest",
+            params={'token': SYNOPTIC_TOKEN,
+                'stid': serial
+            }
+        )
+        data = response.json()
+        print(f"Got {len(data)} active stations")
+        return data
+    except Exception as e:
+        print(f"Fetch error: {e}")
+        return {}
+    
+ASSIMILATION_VARS = [
+    'air_temp', 'dew_point_temperature',
+    'sea_level_pressure', 'wind_speed', 'wind_direction',
+]
+
+
+def fetch_station_timeseries(serial: str, recent_minutes: int = 120, variables: list = None):
+    """
+    Fetch time-series observations from the Synoptic v2 API.
+
+    Defaults to the five variables the assimilation pipeline needs.
+    Validates the response structure and returns {} on any failure.
+    """
+    if variables is None:
+        variables = ASSIMILATION_VARS
+
+    try:
+        params = {
+            'token': SYNOPTIC_TOKEN,
+            'stid': serial,
+            'recent': recent_minutes,
+            'vars': ','.join(variables),
+        }
+
+        response = requests.get(
+            'https://api.synopticdata.com/v2/stations/timeseries',
+            params=params,
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        summary = data.get('SUMMARY', {})
+        if summary.get('RESPONSE_CODE') != 1:
+            print(f"Synoptic API error for {serial}: "
+                  f"{summary.get('RESPONSE_MESSAGE', 'unknown')}")
+            return {}
+
+        if not data.get('STATION'):
+            print(f"No station records returned for {serial}")
+            return {}
+
+        return data
+    except requests.exceptions.Timeout:
+        print(f"Timeout fetching timeseries for {serial}")
+        return {}
+    except requests.exceptions.RequestException as e:
+        print(f"Request error fetching timeseries for {serial}: {e}")
+        return {}
+    except (ValueError, KeyError) as e:
+        print(f"Parse error for {serial} timeseries: {e}")
+        return {}
+
+
+def parse_timeseries_for_assimilation(raw):
+    """
+    Turn a Synoptic v2 timeseries response into a flat list of dicts
+    suitable for the assimilation nudging pipeline.
+
+    Each entry: {
+        'datetime_utc': str,  'temp_c': float|None,
+        'dewpoint_c': float|None, 'pressure_hpa': float|None,
+        'wind_speed_ms': float|None, 'wind_dir_deg': float|None,
+        'elev_m': float
+    }
+    """
+    try:
+        station = raw['STATION'][0]
+    except (KeyError, IndexError, TypeError):
+        return []
+
+    obs = station.get('OBSERVATIONS', {})
+    timestamps = obs.get('date_time', [])
+    if not timestamps:
+        return []
+
+    temps = obs.get('air_temp_set_1', [])
+    dewpoints = obs.get('dew_point_temperature_set_1', [])
+    pressures = obs.get('sea_level_pressure_set_1', [])
+    winds = obs.get('wind_speed_set_1', [])
+    wind_dirs = obs.get('wind_direction_set_1', [])
+    elev = float(station.get('ELEVATION', 247))
+
+    def safe_float(lst, idx):
+        try:
+            v = lst[idx]
+            return float(v) if v is not None else None
+        except (IndexError, TypeError, ValueError):
+            return None
+
+    records = []
+    for i, ts in enumerate(timestamps):
+        temp = safe_float(temps, i)
+        if temp is None:
+            continue
+        records.append({
+            'datetime_utc': ts,
+            'temp_c': temp,
+            'dewpoint_c': safe_float(dewpoints, i),
+            'pressure_hpa': safe_float(pressures, i),
+            'wind_speed_ms': safe_float(winds, i),
+            'wind_dir_deg': safe_float(wind_dirs, i),
+            'elev_m': elev,
+        })
+
+    return records
 
 # ─── SONDEHUB FETCH ──────────────────────────────────────────────────────────
 def fetch_all_balloons():
@@ -463,12 +626,75 @@ def get_balloon_telemetry(serial):
     })
 
 
+@app.route("/weather/<stid>")
+def get_weather(stid):
+    if not SYNOPTIC_TOKEN:
+        return jsonify({"error": "Synoptic Data not configured. Set SYNOPTIC_TOKEN environment variable."}), 503
+
+    data = fetch_station_data(stid)  # Latest observation
+    if not data:
+        return jsonify({"error": "No weather data found for station"}), 404
+
+    return jsonify(data)
+
+
+@app.route("/weather/<stid>/timeseries")
+def get_weather_timeseries(stid):
+    if not SYNOPTIC_TOKEN:
+        return jsonify({"error": "Synoptic Data not configured. Set SYNOPTIC_TOKEN environment variable."}), 503
+
+    recent = request.args.get('recent', default=120, type=int)
+    variables = request.args.get('vars')
+    if variables:
+        variables = variables.split(',')
+
+    data = fetch_station_timeseries(stid, recent_minutes=recent, variables=variables)
+    if not data:
+        return jsonify({"error": "No weather data found for station"}), 404
+
+    parsed = parse_timeseries_for_assimilation(data)
+
+    return jsonify({
+        'raw': data,
+        'parsed': parsed,
+        'observation_count': len(parsed),
+    })
+
+
+@app.route("/weather/stations/search")
+def search_weather_stations():
+    if not SYNOPTIC_TOKEN:
+        return jsonify({"error": "Synoptic Data not configured. Set SYNOPTIC_TOKEN environment variable."}), 503
+
+    # Get optional parameters
+    lat = request.args.get('lat', type=float)
+    long = request.args.get('long', type=float) 
+    radius = request.args.get('radius', type=float)
+    network = request.args.get('network', type=int)
+    query = request.args.get('q')
+    limit = request.args.get('limit', default=40, type=int)
+    if limit is None or limit <= 0:
+        limit = 40
+
+    # Call search with provided parameters
+    data = search_stations(lat=lat, long=long, radius=radius, network=network)
+    
+    stations = data.get('STATION', [])
+
+    # If state query provided, filter results.
+    if query:
+        stations = [s for s in stations if s.get('STATE') == query.upper()]
+
+    return jsonify({"stations": stations[:limit]})
+
+
 @app.route("/status")
 def status():
     return jsonify({
         "status": "running",
         "active_balloons": len(cache["balloons"]),
-        "last_updated": cache["last_updated"]
+        "last_updated": cache["last_updated"],
+        "synoptic_available": SYNOPTIC_TOKEN is not None
     })
 
 
@@ -484,6 +710,11 @@ if __name__ == "__main__":
     print("  GET /balloon/<serial>/analysis   — CAPE, lapse rate, winds, tropopause")
     print("  GET /balloon/<serial>/forecast   — plain English forecast card")
     print("  GET /balloon/<serial>/telemetry  — raw telemetry frames")
+    # Synoptic commands
+    print("  GET /weather/<stid>              — latest weather for station")
+    print("  GET /weather/<stid>/timeseries   — weather time series (?recent=120&vars=temp,wind)")
+    print("  GET /weather/stations/search?q=UT&lat=40.7&long=-111.9&radius=50&network=1 — search weather stations")
+
     print("  GET /status                      — server health check")
 
     socketio.run(app, host="0.0.0.0", port=8080, allow_unsafe_werkzeug=True)

@@ -667,6 +667,7 @@
   }
 }
 
+
 /* ── AltitudeColumn ─────────────────────────────────────────── */
 
 .altitude-column-wrap {
@@ -1192,4 +1193,96 @@
   background: #3b8bd4;
   border-radius: 1px 1px 0 0;
   transition: opacity 0.1s;
+}
+
+/* ── ModelCard component (Person 4) ─────────────────────── */
+
+.model-card-container {
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #ddd;
+  overflow: hidden;
+}
+
+.model-stat-box {
+  flex: 1;
+  background: #f7f8fa;
+  border-radius: 4px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.model-stat-label {
+  font-size: 0.7rem;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.model-stat-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #1d1d1f;
+  font-variant-numeric: tabular-nums;
+}
+
+.model-stat-badge {
+  display: inline-block;
+  align-self: flex-start;
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.model-conf-track {
+  background: #eee;
+  border-radius: 4px;
+  height: 6px;
+  margin: 4px 0;
+  overflow: hidden;
+}
+
+.model-conf-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+.model-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  margin-top: 4px;
+}
+
+.model-table thead tr {
+  border-bottom: 1px solid #eee;
+}
+
+.model-table th {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #4a6cf7;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.model-table td {
+  padding: 5px 8px;
+  color: #444;
+  border-bottom: 1px solid #f5f5f5;
+  font-variant-numeric: tabular-nums;
+}
+
+.model-table tbody tr:last-child td {
+  border-bottom: none;
 }

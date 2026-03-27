@@ -8,6 +8,9 @@ server: {
       '/balloon': 'http://localhost:8080',
       '/balloons': 'http://localhost:8080',
       '/status': 'http://localhost:8080',
+      '/weather': 'http://localhost:8080',
+      '/atmosphere': 'http://localhost:8080',
+      '/sdr': 'http://localhost:8080',
     },
   },
 })

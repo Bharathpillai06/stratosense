@@ -5,6 +5,7 @@ import FlightScrubber from './components/FlightScrubber';
 import SoundingChart from './components/SoundingChart';
 import WindBarbs from './components/WindBarbs';
 import ScoreCard from './components/ScoreCard';
+import ModelCard from './components/ModelCard';
 import './App.css';
 
 const TABS = [
