@@ -22,6 +22,8 @@ export default function AltitudeColumn({ frames, scrubIndex, analysis }) {
   const balloonPosRef    = useRef({ lat: 45, lon: -85, altKm: 1 });
   const streamDataRef    = useRef([]);
   const labelContainerRef = useRef(null);
+  const cloudGroupRef    = useRef(null);
+  const cloudVelRef      = useRef([]);
 
   const validFrames = useMemo(
     () => (frames || []).filter(f => f.alt != null && f.temp != null).sort((a, b) => a.alt - b.alt),
@@ -265,7 +267,26 @@ export default function AltitudeColumn({ frames, scrubIndex, analysis }) {
         new THREE.MeshBasicMaterial({ color: 0x1a4a2e, transparent: true, opacity: 0.18, depthWrite: false }),
       ));
 
-      threeRef.current = { ...threeRef.current, mapMesh, mapTex };
+      // ── Cloud sprite texture — single soft radial blob ─────────────────────
+      const cc = document.createElement('canvas');
+      cc.width = 256; cc.height = 256;
+      const cctx = cc.getContext('2d');
+      const cg = cctx.createRadialGradient(128,128,0,128,128,128);
+      cg.addColorStop(0,   'rgba(255,255,255,1)');
+      cg.addColorStop(0.25,'rgba(255,255,255,0.85)');
+      cg.addColorStop(0.55,'rgba(255,255,255,0.4)');
+      cg.addColorStop(0.82,'rgba(255,255,255,0.1)');
+      cg.addColorStop(1,   'rgba(255,255,255,0)');
+      cctx.fillStyle = cg;
+      cctx.fillRect(0, 0, 256, 256);
+      const cloudTex = new THREE.CanvasTexture(cc);
+
+      // ── Cloud group — populated by analysis effect ─────────────────────────
+      const cloudGroup = new THREE.Group();
+      scene.add(cloudGroup);
+      cloudGroupRef.current = cloudGroup;
+
+      threeRef.current = { ...threeRef.current, mapMesh, mapTex, cloudTex };
 
       // ── Concentric atmospheric shells — top hemisphere only ────────────────
       LAYERS.forEach(layer => {
@@ -352,6 +373,17 @@ export default function AltitudeColumn({ frames, scrubIndex, analysis }) {
         // Balloon centered over map disc, height = altitude scaled to scene
         const { altKm } = balloonPosRef.current;
         balloonGroup.position.set(0, altKm * ATM_S + 0.1 + Math.sin(t * 1.4) * 0.02, 0);
+
+        // Move clouds with wind, wrap at disc boundary
+        cloudVelRef.current.forEach(c => {
+          c.mesh.position.x += c.vx;
+          c.mesh.position.z += c.vz;
+          const cr = Math.sqrt(c.mesh.position.x ** 2 + c.mesh.position.z ** 2);
+          if (cr > EARTH_R * 0.92) {
+            c.mesh.position.x *= -0.55;
+            c.mesh.position.z *= -0.55;
+          }
+        });
 
         // Pulse halo
         haloMesh.material.opacity = 0.35 + Math.sin(t * 3) * 0.2;
@@ -462,6 +494,118 @@ export default function AltitudeColumn({ frames, scrubIndex, analysis }) {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [Math.round((scrubFrame?.lat ?? 0) / 0.05), Math.round((scrubFrame?.lon ?? 0) / 0.05)]);
+
+  // ── Build clouds from analysis + telemetry ───────────────────────────────
+  useEffect(() => {
+    const cg = cloudGroupRef.current;
+    const { cloudTex } = threeRef.current ?? {};
+    if (!cg || !cloudTex) return;
+
+    // Clear previous clouds
+    while (cg.children.length) { cg.children[0].material?.dispose(); cg.remove(cg.children[0]); }
+    cloudVelRef.current = [];
+
+    if (!analysis) return;
+
+    const cape    = analysis.cape ?? 0;
+    const pw      = analysis.precipitable_water_mm ?? 0;
+    const humid   = currentHumid ?? 50;
+    const tropo   = analysis.tropopause_alt_km ?? 12;
+    const winds   = analysis.wind_profile ?? [];
+
+    // Get wind velocity vector at a given altitude (km)
+    const windAt = (altKm) => {
+      if (!winds.length) return { vx: 0, vz: 0 };
+      const altM = altKm * 1000;
+      const w = winds.reduce((b, w) => Math.abs(w.alt - altM) < Math.abs(b.alt - altM) ? w : b);
+      const dir = ((w.direction_deg + 180) % 360) * Math.PI / 180;
+      const spd = w.speed_ms * 0.00028;
+      return { vx: Math.sin(dir) * spd, vz: Math.cos(dir) * spd };
+    };
+
+    // Add one sprite blob; returns the sprite so the cluster can share a velocity entry
+    const addBlob = (x, y, z, sz, opacity, color) => {
+      const mat = new THREE.SpriteMaterial({ map: cloudTex, transparent: true, opacity, depthWrite: false, color });
+      const spr = new THREE.Sprite(mat);
+      spr.scale.set(sz, sz * 0.65, 1);
+      spr.position.set(x, y, z);
+      cg.add(spr);
+      return spr;
+    };
+
+    // Add a cluster of overlapping blobs (looks like a single puffy cloud)
+    const addCluster = (cx, cy, cz, baseSize, blobCount, opacity, color, wind) => {
+      const spread = baseSize * 0.35;
+      for (let b = 0; b < blobCount; b++) {
+        const ox = (Math.random()-0.5) * spread;
+        const oz = (Math.random()-0.5) * spread;
+        const oy = (Math.random()-0.5) * spread * 0.3;
+        const sz = baseSize * (0.55 + Math.random() * 0.65);
+        const op = opacity * (0.65 + Math.random() * 0.45);
+        const spr = addBlob(cx+ox, cy+oy, cz+oz, sz, Math.min(op, 0.82), color);
+        cloudVelRef.current.push({ mesh: spr, vx: wind.vx + (Math.random()-0.5)*0.00006, vz: wind.vz + (Math.random()-0.5)*0.00006 });
+      }
+    };
+
+    const rPos = (maxR) => { const a = Math.random()*Math.PI*2, r = Math.sqrt(Math.random())*maxR; return [Math.cos(a)*r, Math.sin(a)*r]; };
+
+    // ── Low cumulus/stratus (0.3–2.5 km) — humidity + precip water ────────
+    if (humid > 30) {
+      const clusterCount = Math.round(6 + (humid/100)*10 + (pw/40)*4);
+      const op = 0.22 + (humid/100)*0.38;
+      const wind = windAt(1.5);
+      for (let i = 0; i < clusterCount; i++) {
+        const [px, pz] = rPos(EARTH_R * 0.8);
+        const py = (0.4 + Math.random() * 2.0) * ATM_S;
+        const sz = 0.7 + Math.random() * 0.9;
+        addCluster(px, py, pz, sz, 2+Math.floor(Math.random()*3), op, 0xd8eeff, wind);
+      }
+    }
+
+    // ── Mid altocumulus (3–6 km) — humidity + cape ────────────────────────
+    if (humid > 25 || cape > 200) {
+      const clusterCount = Math.round(4 + (cape/2000)*7 + (humid/100)*4);
+      const op = 0.16 + (humid/100)*0.28 + Math.min(cape/5000, 0.18);
+      const wind = windAt(4.5);
+      for (let i = 0; i < clusterCount; i++) {
+        const [px, pz] = rPos(EARTH_R * 0.84);
+        const py = (3 + Math.random() * 3) * ATM_S;
+        const sz = 0.55 + Math.random() * 0.8;
+        addCluster(px, py, pz, sz, 2+Math.floor(Math.random()*2), op, 0xe2f0ff, wind);
+      }
+    }
+
+    // ── Cumulonimbus towers (1.5–9 km) — high CAPE ───────────────────────
+    if (cape > 1000) {
+      const count = Math.min(Math.round(cape / 600), 8);
+      const wind = windAt(5);
+      for (let i = 0; i < count; i++) {
+        const [bx, bz] = rPos(EARTH_R * 0.65);
+        for (let lv = 0; lv < 7; lv++) {
+          const py = (1.5 + lv * 1.2) * ATM_S;
+          const sz = (1.1 - lv * 0.07) * (0.8 + Math.random() * 0.4);
+          const op = Math.min(0.75 - lv * 0.07, 0.75);
+          const col = lv < 2 ? 0x90a8bc : lv < 5 ? 0xcde0f4 : 0xeaf5ff;
+          addCluster(bx, py, bz, sz, 3, op, col, wind);
+        }
+      }
+    }
+
+    // ── High cirrus (7–11 km) — cape + tropopause — thin wide wisps ───────
+    if (cape > 100 || tropo > 8) {
+      const count = Math.round(5 + (cape/1200)*8 + (tropo > 11 ? 4 : 0));
+      const op = 0.07 + Math.min(cape/5000, 0.14) + (tropo > 11 ? 0.06 : 0);
+      const wind = windAt(9);
+      for (let i = 0; i < count; i++) {
+        const [px, pz] = rPos(EARTH_R * 0.9);
+        const py = (7 + Math.random() * 4) * ATM_S;
+        // Cirrus: wide, flat, wispy — single large blob per puff
+        const spr = addBlob(px, py, pz, 1.8+Math.random()*1.4, op, 0xf2f8ff);
+        spr.scale.set(spr.scale.x, spr.scale.y * 0.38, 1); // very flat
+        cloudVelRef.current.push({ mesh: spr, vx: wind.vx*1.7 + (Math.random()-0.5)*0.0001, vz: wind.vz*1.7 + (Math.random()-0.5)*0.0001 });
+      }
+    }
+  }, [analysis, currentHumid]);
 
   // Layer label vertical % positions (bottom of each layer relative to full height)
   const layerLabelPositions = LAYERS.map(l => ({
