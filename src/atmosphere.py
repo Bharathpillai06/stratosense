@@ -167,6 +167,70 @@ def calc_balloon_age(balloon):
         return None
 
 
+# ─── SURFACE TIMESERIES FOR ASSIMILATION ─────────────────────────────────────
+
+_ts_cache = {
+    'data': None,
+    'fetched_at': None,
+}
+
+
+def get_surface_timeseries(station='KCMH', recent_minutes=120):
+    """
+    Fetch the last 2 hours of surface observations from Person 1's
+    timeseries endpoint and convert them into observation dicts the
+    nudging pipeline can use as ground-level truth.
+
+    Returns a list of {alt, temp, humidity, datetime} frame-like dicts
+    at station elevation, so apply_observation_nudging can blend them
+    with balloon data.
+    """
+    import requests
+
+    now = datetime.now(timezone.utc)
+
+    if (_ts_cache['data'] is not None
+            and _ts_cache['fetched_at'] is not None
+            and (now - _ts_cache['fetched_at']).total_seconds() < 300):
+        return list(_ts_cache['data'])
+
+    try:
+        resp = requests.get(
+            f'http://localhost:8080/weather/{station}/timeseries',
+            params={'recent': recent_minutes},
+            timeout=5,
+        )
+        if not resp.ok:
+            return []
+
+        parsed = resp.json().get('parsed', [])
+        if not parsed:
+            return []
+
+        frames = []
+        for obs in parsed:
+            if obs.get('temp_c') is None:
+                continue
+            rh = None
+            if obs.get('dewpoint_c') is not None and obs['temp_c'] is not None:
+                from interpolation import calc_relative_humidity
+                rh = calc_relative_humidity(obs['temp_c'], obs['dewpoint_c'])
+                rh = max(0.0, min(100.0, rh))
+
+            frames.append({
+                'alt': obs['elev_m'],
+                'temp': obs['temp_c'],
+                'humidity': rh,
+                'datetime': obs['datetime_utc'],
+            })
+
+        _ts_cache['data'] = frames
+        _ts_cache['fetched_at'] = now
+        return list(frames)
+    except Exception:
+        return []
+
+
 # ─── ROUTES ──────────────────────────────────────────────────────────────────
 
 @atmosphere_bp.route('/atmosphere/profile')
@@ -174,14 +238,17 @@ def atmosphere_profile():
     """Full atmospheric profile, surface to 30 km."""
     surface = get_latest_surface_obs()
     balloon = get_latest_balloon_data()
+    surface_ts = get_surface_timeseries(
+        station=surface.get('station_id', 'KCMH'))
 
     if balloon:
         surface = update_lapse_rates(surface, balloon)
 
     profile = generate_full_profile(surface)
 
-    if balloon:
-        apply_observation_nudging(profile, balloon)
+    nudging_frames = (balloon or []) + surface_ts
+    if nudging_frames:
+        apply_observation_nudging(profile, nudging_frames)
 
     age = calc_balloon_age(balloon)
     serial = balloon[0].get('serial') if balloon else None
@@ -191,7 +258,10 @@ def atmosphere_profile():
         'surface_station': surface.get('station_id', 'KCMH'),
         'balloon_serial': serial,
         'balloon_age_hours': age,
-        'assimilation_active': balloon is not None and age is not None and age < 6,
+        'assimilation_active': (
+            (balloon is not None and age is not None and age < 6)
+            or len(surface_ts) > 0),
+        'surface_obs_count': len(surface_ts),
         'lapse_rate_source': (
             'observed' if surface.get('elr') is not None
             and surface.get('elr') != 6.5 else 'standard'),
@@ -237,20 +307,39 @@ def atmosphere_status():
     balloon = get_latest_balloon_data()
     age = calc_balloon_age(balloon)
     surface = get_latest_surface_obs()
+    surface_ts = get_surface_timeseries(
+        station=surface.get('station_id', 'KCMH'))
 
     if balloon:
         surface = update_lapse_rates(surface, balloon)
 
+    has_balloon = age is not None and age < 6
+    has_surface_ts = len(surface_ts) > 0
+
+    if has_balloon:
+        mode = 'assimilated'
+    elif has_surface_ts:
+        mode = 'surface-assimilated'
+    else:
+        mode = 'interpolated'
+
+    if has_balloon and age < 1:
+        confidence = 'high'
+    elif has_balloon and age < 3:
+        confidence = 'medium'
+    elif has_surface_ts:
+        confidence = 'surface-only'
+    else:
+        confidence = 'baseline'
+
     return jsonify({
-        'mode': 'assimilated' if age is not None and age < 6 else 'interpolated',
+        'mode': mode,
         'balloon_age_hours': age,
+        'surface_obs_count': len(surface_ts),
         'lapse_rate_c_per_km': surface.get('elr', 6.5),
         'lapse_rate_source': 'observed' if surface.get('elr') else 'standard',
         'surface_station': surface.get('station_id', 'KCMH'),
-        'confidence': (
-            'high' if age is not None and age < 1
-            else 'medium' if age is not None and age < 3
-            else 'baseline'),
+        'confidence': confidence,
     })
 
 
