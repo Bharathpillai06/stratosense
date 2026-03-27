@@ -13,10 +13,13 @@ from dotenv import load_dotenv
 load_dotenv()
 SYNOPTIC_TOKEN = os.getenv("SYNOPTIC_TOKEN")
 
-# Import Synoptic Data client
-from synoptic_data import SynopticDataClient
+# Person 4: atmospheric model + SDR blueprints
+from atmosphere import atmosphere_bp
+from sdr_integration import sdr_bp
 
 app = Flask(__name__)
+app.register_blueprint(atmosphere_bp)
+app.register_blueprint(sdr_bp)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # ─── CACHE ───────────────────────────────────────────────────────────────────
