@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom';
 import heroImage from '../assets/hero-stratosphere.png';
 import '../styles/landing.css';
 
+const STATUS_POLL_MS = 5000;
+
 const FEATURES = [
   {
     icon: '◈',
@@ -30,10 +32,25 @@ export default function LandingPage() {
   const [serverStatus, setServerStatus] = useState(null);
 
   useEffect(() => {
-    fetch('/status')
-      .then((response) => response.json())
-      .then(setServerStatus)
-      .catch(() => setServerStatus({ status: 'offline' }));
+    let cancelled = false;
+
+    async function loadStatus() {
+      try {
+        const response = await fetch('/status');
+        const data = await response.json();
+        if (!cancelled) setServerStatus(data);
+      } catch {
+        if (!cancelled) setServerStatus({ status: 'offline' });
+      }
+    }
+
+    loadStatus();
+    const intervalId = setInterval(loadStatus, STATUS_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
   }, []);
 
   const online = serverStatus?.status === 'running';

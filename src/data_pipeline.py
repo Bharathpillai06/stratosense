@@ -22,6 +22,7 @@ app = Flask(__name__)
 app.register_blueprint(atmosphere_bp)
 app.register_blueprint(sdr_bp)
 socketio = SocketIO(app, cors_allowed_origins="*")
+SONDEHUB_POLL_INTERVAL_SECONDS = 10
 
 # ─── CACHE ───────────────────────────────────────────────────────────────────
 cache = {
@@ -723,7 +724,7 @@ def poll_sondehub():
         print(f"Cache updated — {len(processed)} balloons at {cache['last_updated']}")
 
         socketio.emit("balloons_update", list(processed.values()))
-        time.sleep(30)
+        time.sleep(SONDEHUB_POLL_INTERVAL_SECONDS)
 
 
 # ─── FLASK ROUTES ────────────────────────────────────────────────────────────

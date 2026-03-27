@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import Globe from '../components/Globe';
 import AltitudeColumn from '../components/AltitudeColumn';
@@ -8,6 +8,9 @@ import SoundingChart from '../components/SoundingChart';
 import WindBarbs from '../components/WindBarbs';
 import ScoreCard from '../components/ScoreCard';
 import '../styles/dashboard.css';
+
+const LIVE_FLIGHT_REFRESH_MS = 5000;
+const STATUS_POLL_MS = 5000;
 
 const TABS = [
   { id: '3d', label: '3D Profile', icon: '◈' },
@@ -29,13 +32,38 @@ export default function DashboardPage() {
   const [stationTimeIndex, setStationTimeIndex] = useState(0);
   const [stationHeightIndex, setStationHeightIndex] = useState(0);
   const activeSerial = activeSource === 'balloon' ? activeId : null;
+  const scrubIndexRef = useRef(0);
+  const flightFrameCountRef = useRef(0);
 
   useEffect(() => {
-    fetch('/status')
-      .then((r) => r.json())
-      .then(setServerStatus)
-      .catch(() => setServerStatus({ status: 'offline' }));
+    let cancelled = false;
+
+    async function loadStatus() {
+      try {
+        const response = await fetch('/status');
+        const data = await response.json();
+        if (!cancelled) setServerStatus(data);
+      } catch {
+        if (!cancelled) setServerStatus({ status: 'offline' });
+      }
+    }
+
+    loadStatus();
+    const intervalId = setInterval(loadStatus, STATUS_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
   }, []);
+
+  useEffect(() => {
+    scrubIndexRef.current = scrubIndex;
+  }, [scrubIndex]);
+
+  useEffect(() => {
+    flightFrameCountRef.current = flightFrames?.length ?? 0;
+  }, [flightFrames]);
 
   useEffect(() => {
     function onBalloonSelected(e) {
@@ -62,11 +90,13 @@ export default function DashboardPage() {
     };
   }, []);
 
-  const loadFlightData = useCallback(async (serial) => {
-    setFlightFrames(null);
-    setAnalysis(null);
-    setScrubIndex(0);
-    if (!serial) return;
+  const loadFlightData = useCallback(async (serial, { preserveScrubber = false } = {}) => {
+    if (!serial) {
+      setFlightFrames(null);
+      setAnalysis(null);
+      setScrubIndex(0);
+      return;
+    }
     try {
       const [pathRes, analysisRes] = await Promise.all([
         fetch(`/balloon/${serial}`),
@@ -76,7 +106,14 @@ export default function DashboardPage() {
         const d = await pathRes.json();
         const frames = (d.path || []).filter((f) => f.lat != null && f.lon != null);
         setFlightFrames(frames);
-        setScrubIndex(Math.max(0, frames.length - 1));
+        const nextMaxIndex = Math.max(0, frames.length - 1);
+        const shouldFollowLive = !preserveScrubber
+          || scrubIndexRef.current >= Math.max(0, flightFrameCountRef.current - 2);
+        setScrubIndex(
+          shouldFollowLive
+            ? nextMaxIndex
+            : Math.min(scrubIndexRef.current, nextMaxIndex)
+        );
       }
       if (analysisRes.ok) {
         setAnalysis(await analysisRes.json());
@@ -96,6 +133,18 @@ export default function DashboardPage() {
       cancelled = true;
     };
   }, [activeSerial, loadFlightData]);
+
+  useEffect(() => {
+    if (activeSource !== 'balloon' || !activeSerial) return undefined;
+
+    const intervalId = setInterval(() => {
+      loadFlightData(activeSerial, { preserveScrubber: true });
+    }, LIVE_FLIGHT_REFRESH_MS);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [activeSource, activeSerial, loadFlightData]);
 
   useEffect(() => {
     let cancelled = false;

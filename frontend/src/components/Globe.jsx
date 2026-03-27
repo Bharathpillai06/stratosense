@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 
 const LEAFLET_CSS = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
 const LEAFLET_JS  = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-const BALLOON_POLL_MS = 30000;
+const BALLOON_POLL_MS = 5000;
 const STATION_LIMIT = 300;
 const MIN_STATION_RADIUS_KM = 50;
 const MAX_STATION_RADIUS_KM = 2500;
@@ -65,6 +65,23 @@ export default function Globe({ selectedSerial, scrubFrame }) {
   const [loadError,   setLoadError]   = useState(null);
   const [fetchError,  setFetchError]  = useState(null);
 
+  function balloonPopupHtml(balloon) {
+    return (
+      `<b style="font-family:sans-serif">${balloon.serial}</b>` +
+      `<br/>Alt: ${balloon.alt != null ? `${Math.round(balloon.alt)} m` : '?'}` +
+      `<br/>Temp: ${balloon.temp != null ? `${balloon.temp} °C` : '?'}`
+    );
+  }
+
+  function stationPopupHtml(station) {
+    return (
+      `<b style="font-family:sans-serif">${station.STID}</b>` +
+      `<br/>${station.NAME || 'Ground station'}` +
+      `<br/>State: ${station.STATE || '?'}` +
+      `<br/>Elev: ${station.ELEVATION != null ? `${Math.round(station.ELEVATION)} m` : '?'}`
+    );
+  }
+
   useEffect(() => { selectedSerialRef.current = selectedSerial; }, [selectedSerial]);
 
   // ── Path trail ────────────────────────────────────────────────
@@ -109,9 +126,14 @@ export default function Globe({ selectedSerial, scrubFrame }) {
         if (!incoming.has(serial)) { marker.remove(); delete markersRef.current[serial]; }
       }
 
-      // Add new markers
+      // Add new markers or update existing ones
       balloons.forEach(b => {
-        if (markersRef.current[b.serial]) return;
+        const existingMarker = markersRef.current[b.serial];
+        if (existingMarker) {
+          existingMarker.setLatLng([b.lat, b.lon]);
+          existingMarker.setPopupContent(balloonPopupHtml(b));
+          return;
+        }
 
         const marker = window.L.circleMarker([b.lat, b.lon], {
           radius: 8,
@@ -121,11 +143,7 @@ export default function Globe({ selectedSerial, scrubFrame }) {
           fillOpacity: 1,
         });
 
-        marker.bindPopup(
-          `<b style="font-family:sans-serif">${b.serial}</b>` +
-          `<br/>Alt: ${b.alt != null ? Math.round(b.alt) + ' m' : '?'}` +
-          `<br/>Temp: ${b.temp != null ? b.temp + ' °C' : '?'}`
-        );
+        marker.bindPopup(balloonPopupHtml(b));
         marker.on('click', () => {
           document.dispatchEvent(
             new CustomEvent('balloonSelected', { detail: { serial: b.serial } })
@@ -171,7 +189,12 @@ export default function Globe({ selectedSerial, scrubFrame }) {
       }
 
       stations.forEach((s) => {
-        if (stationMarkersRef.current[s.STID]) return;
+        const existingMarker = stationMarkersRef.current[s.STID];
+        if (existingMarker) {
+          existingMarker.setLatLng([s.LATITUDE, s.LONGITUDE]);
+          existingMarker.setPopupContent(stationPopupHtml(s));
+          return;
+        }
 
         const marker = window.L.circleMarker([s.LATITUDE, s.LONGITUDE], {
           radius: 5,
@@ -180,14 +203,7 @@ export default function Globe({ selectedSerial, scrubFrame }) {
           fillColor: '#2f9e44',
           fillOpacity: 0.9,
         });
-
-        marker.bindPopup(
-          `<b style="font-family:sans-serif">${s.STID}</b>` +
-          `<br/>${s.NAME || 'Ground station'}` +
-          `<br/>State: ${s.STATE || '?'}` +
-          `<br/>Elev: ${s.ELEVATION != null ? Math.round(s.ELEVATION) + ' m' : '?'}` +
-          ``
-        );
+        marker.bindPopup(stationPopupHtml(s));
         marker.on('click', () => {
           document.dispatchEvent(
             new CustomEvent('stationSelected', { detail: { stid: s.STID } })
@@ -282,8 +298,7 @@ export default function Globe({ selectedSerial, scrubFrame }) {
 
         if (!cancelled) {
           setMapReady(true);
-          await fetchAndPlaceBalloons();
-          scheduleStationsFetch();
+          await Promise.all([fetchAndPlaceBalloons(), fetchAndPlaceStations()]);
           pollRef.current = setInterval(() => {
             fetchAndPlaceBalloons();
             fetchAndPlaceStations();

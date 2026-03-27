@@ -25,8 +25,9 @@ ChartJS.register(
   zoomPlugin
 );
 
-const ANIMATION_INTERVAL_MS = 80;
+const ANIMATION_INTERVAL_MS = 16;
 const MAX_ANIMATION_FRAMES = 400;
+const INITIAL_RENDER_TICKS = 20;
 const LIVE_POLL_MS = 2000;
 
 function subsample(arr, maxLen) {
@@ -352,6 +353,7 @@ export default function SoundingChart({
         setStatus('animating');
 
         let frameIndex = 0;
+        const framesPerTick = Math.max(1, Math.ceil(frames.length / INITIAL_RENDER_TICKS));
 
         intervalRef.current = setInterval(() => {
           if (cancelled || frameIndex >= frames.length) {
@@ -389,18 +391,23 @@ export default function SoundingChart({
             return;
           }
 
-          const f = frames[frameIndex];
-          const altKm = f.alt / 1000;
+          let renderedThisTick = 0;
+          while (frameIndex < frames.length && renderedThisTick < framesPerTick) {
+            const f = frames[frameIndex];
+            const altKm = f.alt / 1000;
 
-          chart.data.datasets[0].data.push({ x: f.temp, y: altKm });
+            chart.data.datasets[0].data.push({ x: f.temp, y: altKm });
 
-          const dp = calcDewpoint(f.temp, f.humidity);
-          if (dp != null) {
-            chart.data.datasets[1].data.push({ x: dp, y: altKm });
+            const dp = calcDewpoint(f.temp, f.humidity);
+            if (dp != null) {
+              chart.data.datasets[1].data.push({ x: dp, y: altKm });
+            }
+
+            frameIndex++;
+            renderedThisTick++;
           }
 
           chart.update('none');
-          frameIndex++;
           setProgress({ current: frameIndex, total: frames.length });
         }, ANIMATION_INTERVAL_MS);
       } catch (err) {
