@@ -16,7 +16,7 @@ const EARTH_R = 4.5;
 const ATM_S   = 0.16;
 
 // ── Component ────────────────────────────────────────────────────────────────
-export default function AltitudeColumn({ frames, scrubIndex, analysis }) {
+export default function AltitudeColumn({ frames, scrubIndex, analysis, serial }) {
   const mountRef         = useRef(null);
   const threeRef         = useRef(null);
   const balloonPosRef    = useRef({ lat: 45, lon: -85, altKm: 1 });
@@ -24,6 +24,7 @@ export default function AltitudeColumn({ frames, scrubIndex, analysis }) {
   const labelContainerRef = useRef(null);
   const cloudGroupRef    = useRef(null);
   const cloudVelRef      = useRef([]);
+  const profileGroupRef  = useRef(null);
 
   const validFrames = useMemo(
     () => (frames || []).filter(f => f.alt != null && f.temp != null).sort((a, b) => a.alt - b.alt),
@@ -286,6 +287,11 @@ export default function AltitudeColumn({ frames, scrubIndex, analysis }) {
       scene.add(cloudGroup);
       cloudGroupRef.current = cloudGroup;
 
+      // ── Profile group — temperature rings from assimilation data ───────────
+      const profileGroup = new THREE.Group();
+      scene.add(profileGroup);
+      profileGroupRef.current = profileGroup;
+
       threeRef.current = { ...threeRef.current, mapMesh, mapTex, cloudTex };
 
       // ── Concentric atmospheric shells — top hemisphere only ────────────────
@@ -494,6 +500,62 @@ export default function AltitudeColumn({ frames, scrubIndex, analysis }) {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [Math.round((scrubFrame?.lat ?? 0) / 0.05), Math.round((scrubFrame?.lon ?? 0) / 0.05)]);
+
+  // ── 3D profile rings from assimilation / interpolation data ─────────────
+  useEffect(() => {
+    const pg = profileGroupRef.current;
+    if (!pg) return;
+    while (pg.children.length) { pg.children[0].material?.dispose(); pg.remove(pg.children[0]); }
+    if (!serial) return;
+
+    fetch('/atmosphere/profile')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data?.profile?.length || !profileGroupRef.current) return;
+        const pg2 = profileGroupRef.current;
+
+        // Sample every ~1 km
+        const seen = new Set();
+        data.profile.forEach(p => {
+          const km = Math.round(p.altitude_m / 1000);
+          if (seen.has(km) || km > MAX_KM) return;
+          seen.add(km);
+
+          const y = km * ATM_S;
+          const t = Math.max(0, Math.min(1, ((p.temp_c ?? -50) + 65) / 95));
+          // Blue (cold) → cyan → green → yellow → red (warm)
+          const color = new THREE.Color(
+            t * 0.9,
+            0.15 + Math.sin(t * Math.PI) * 0.6,
+            (1 - t) * 0.95,
+          );
+          const isAssim = p.source === 'assimilated';
+          const opacity = isAssim ? 0.45 : 0.1;
+          const radius  = EARTH_R * (isAssim ? 0.78 : 0.72);
+
+          // Thin filled disc at this altitude — temperature colour
+          const disc = new THREE.Mesh(
+            new THREE.CircleGeometry(radius, 64),
+            new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide }),
+          );
+          disc.rotation.x = -Math.PI / 2;
+          disc.position.y = y + 0.002;
+          pg2.add(disc);
+
+          // Bright edge ring for assimilated layers (ground-truth observations)
+          if (isAssim) {
+            const ring = new THREE.Mesh(
+              new THREE.RingGeometry(radius, radius + 0.06, 64),
+              new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide }),
+            );
+            ring.rotation.x = -Math.PI / 2;
+            ring.position.y = y + 0.003;
+            pg2.add(ring);
+          }
+        });
+      })
+      .catch(() => {});
+  }, [serial]);
 
   // ── Build clouds from analysis + telemetry ───────────────────────────────
   useEffect(() => {

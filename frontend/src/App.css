@@ -624,9 +624,122 @@
   letter-spacing: 0.3px;
 }
 
+/* ── ScoreCard assimilation + profile sections ── */
+
+.sc-section {
+  border-top: 1px solid #1e2a3a;
+  padding: 12px 16px;
+}
+
+.sc-section-title {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: #7eb3e8;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sc-mode-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 8px;
+  text-transform: capitalize;
+  letter-spacing: 0.2px;
+}
+
+.sc-assim-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 14px;
+}
+
+.sc-assim-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sc-assim-wide {
+  grid-column: span 2;
+}
+
+.sc-assim-key {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #557;
+}
+
+.sc-assim-val {
+  font-size: 0.78rem;
+  color: #ccd;
+  font-variant-numeric: tabular-nums;
+}
+
+.sc-conf-track {
+  height: 4px;
+  background: #1e2a3a;
+  border-radius: 2px;
+  overflow: hidden;
+  margin: 2px 0;
+}
+
+.sc-conf-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+
+.sc-profile-scroll {
+  overflow-x: auto;
+}
+
+.sc-profile-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.sc-profile-table th {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: #556;
+  padding: 4px 6px;
+  text-align: left;
+  border-bottom: 1px solid #1e2a3a;
+}
+
+.sc-profile-table td {
+  padding: 4px 6px;
+  color: #aab;
+  border-bottom: 1px solid #111822;
+}
+
+.sc-row-assim td {
+  color: #cce;
+  background: rgba(93, 202, 165, 0.05);
+}
+
+.sc-src-assim {
+  color: #5dcaa5 !important;
+  font-weight: 700;
+}
+
+.sc-src-interp {
+  color: #446 !important;
+}
+
 .forecast-section {
   padding: 14px 20px;
-  border-top: 1px solid #eee;
+  border-top: 1px solid #1e2a3a;
 }
 
 .forecast-heading {

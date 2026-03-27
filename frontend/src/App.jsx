@@ -198,6 +198,7 @@ export default function App() {
                 frames={flightFrames}
                 scrubIndex={scrubIndex}
                 analysis={analysis}
+                serial={activeSerial}
               />
             </div>
 

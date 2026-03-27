@@ -1,197 +1,138 @@
 import { useEffect, useRef, useState } from 'react';
 
-const LIVE_POLL_MS = 2000;
+const LIVE_POLL_MS = 5000;
 
 const RISK_COLORS = {
-  low:      { bg: '#d4edda', text: '#155724' },
-  moderate: { bg: '#fff3cd', text: '#856404' },
-  high:     { bg: '#ffeeba', text: '#c8540a' },
-  extreme:  { bg: '#f8d7da', text: '#721c24' },
+  low:      { bg: '#1a3a1a', text: '#5ecf9a' },
+  moderate: { bg: '#3a2e00', text: '#ffe066' },
+  high:     { bg: '#3a1a00', text: '#ff8844' },
+  extreme:  { bg: '#3a0a0a', text: '#ff4444' },
+};
+
+const MODE_COLORS = {
+  assimilated:           { bg: '#1a3a2a', text: '#5dcaa5' },
+  'surface-assimilated': { bg: '#1a2a3a', text: '#7eb3e8' },
+  interpolated:          { bg: '#2a2a1a', text: '#ef9f27' },
+};
+
+const CONF_COLORS = {
+  high:           '#5dcaa5',
+  medium:         '#7eb3e8',
+  'surface-only': '#ef9f27',
+  baseline:       '#666',
 };
 
 function capeColor(v) {
   if (v == null) return null;
-  if (v < 300) return 'low';
+  if (v < 300)  return 'low';
   if (v < 1000) return 'moderate';
   if (v < 2500) return 'high';
   return 'extreme';
 }
 
-function lapseColor(v) {
+function lapseLabel(v) {
   if (v == null) return null;
-  if (v < 6.5) return { bg: '#d6eaf8', text: '#1a5276' };
-  if (v <= 9.8) return 'moderate';
-  return 'extreme';
+  if (v < 6.5)  return 'Stable';
+  if (v <= 9.8) return 'Conditional';
+  return 'Unstable';
 }
 
-function precipColor(v) {
+function precipLabel(v) {
   if (v == null) return null;
-  if (v > 40) return 'high';
-  if (v > 25) return 'moderate';
+  if (v > 40) return 'Very High';
+  if (v > 25) return 'Moderate';
   return null;
 }
 
-function riskPrefix(str) {
+function riskKey(str) {
   if (!str) return null;
-  const prefix = str.split(/\s*—\s*/)[0].toLowerCase().trim();
-  if (prefix in RISK_COLORS) return prefix;
-  return null;
+  const k = str.split(/\s*—\s*/)[0].toLowerCase().trim();
+  return k in RISK_COLORS ? k : null;
 }
 
-function getBadge(colorKey) {
-  if (!colorKey) return null;
-  if (typeof colorKey === 'object') return colorKey;
-  return RISK_COLORS[colorKey] || null;
+function getBadge(key) {
+  if (!key) return null;
+  if (typeof key === 'object') return key;
+  return RISK_COLORS[key] ?? null;
 }
 
-function formatValue(val, unit) {
+function fmt(val, unit) {
   if (val == null) return '—';
-  const rounded = typeof val === 'number' ? (Number.isInteger(val) ? val : val.toFixed(1)) : val;
-  return `${rounded} ${unit}`;
+  const v = typeof val === 'number' ? (Number.isInteger(val) ? val : val.toFixed(1)) : val;
+  return unit ? `${v} ${unit}` : String(v);
 }
 
-const TILES = [
-  {
-    label: 'CAPE',
-    field: 'cape',
-    unit: 'J/kg',
-    color: (a) => capeColor(a.cape),
-    badgeLabel: (a) => { const p = riskPrefix(a.storm_risk); return p ? p.charAt(0).toUpperCase() + p.slice(1) : null; },
-  },
-  {
-    label: 'CIN',
-    field: 'cin',
-    unit: 'J/kg',
-    color: () => ({ bg: '#eee', text: '#555' }),
-    badgeLabel: () => 'Info',
-  },
-  {
-    label: 'Lapse Rate',
-    field: 'lapse_rate_c_per_km',
-    unit: '°C/km',
-    color: (a) => lapseColor(a.lapse_rate_c_per_km),
-    badgeLabel: (a) => {
-      const v = a.lapse_rate_c_per_km;
-      if (v == null) return null;
-      if (v < 6.5) return 'Stable';
-      if (v <= 9.8) return 'Conditional';
-      return 'Unstable';
-    },
-  },
-  {
-    label: 'Tropopause',
-    field: 'tropopause_alt_km',
-    unit: 'km',
-    color: () => null,
-    badgeLabel: () => null,
-  },
-  {
-    label: 'Precip Water',
-    field: 'precipitable_water_mm',
-    unit: 'mm',
-    color: (a) => precipColor(a.precipitable_water_mm),
-    badgeLabel: (a) => {
-      const v = a.precipitable_water_mm;
-      if (v == null) return null;
-      if (v > 40) return 'Very High';
-      if (v > 25) return 'Moderate';
-      return null;
-    },
-  },
-  {
-    label: 'Storm Risk',
-    field: 'storm_risk',
-    unit: '',
-    value: (a) => a.storm_risk || '—',
-    color: (a) => riskPrefix(a.storm_risk),
-    badgeLabel: (a) => { const p = riskPrefix(a.storm_risk); return p ? p.charAt(0).toUpperCase() + p.slice(1) : null; },
-  },
-  {
-    label: 'Surface Temp',
-    field: 'surface_temp',
-    unit: '°C',
-    color: () => null,
-    badgeLabel: () => null,
-  },
-  {
-    label: 'Max Altitude',
-    field: 'max_alt',
-    unit: 'km',
-    transform: (v) => v != null ? Math.round(v / 1000 * 10) / 10 : null,
-    color: () => null,
-    badgeLabel: () => null,
-  },
-];
+const PROFILE_ALTS = [300, 1000, 2000, 3000, 5000, 7000, 10000, 15000, 20000, 25000];
+
+function sampleProfile(profile) {
+  if (!profile?.length) return [];
+  return PROFILE_ALTS.map(target =>
+    profile.reduce((best, p) =>
+      Math.abs(p.altitude_m - target) < Math.abs(best.altitude_m - target) ? p : best
+    )
+  );
+}
 
 export default function ScoreCard({ serial }) {
-  const [analysis, setAnalysis] = useState(null);
-  const [forecast, setForecast] = useState(null);
-  const [status, setStatus] = useState('idle');
-  const [error, setError] = useState(null);
+  const [analysis,   setAnalysis]   = useState(null);
+  const [forecast,   setForecast]   = useState(null);
+  const [telemetry,  setTelemetry]  = useState(null);
+  const [atmStatus,  setAtmStatus]  = useState(null);
+  const [atmProfile, setAtmProfile] = useState(null);
+  const [status,     setStatus]     = useState('idle');
+  const [error,      setError]      = useState(null);
   const pollRef = useRef(null);
 
   useEffect(() => {
     if (!serial) {
-      setAnalysis(null);
-      setForecast(null);
-      setStatus('idle');
+      setAnalysis(null); setForecast(null); setTelemetry(null);
+      setAtmStatus(null); setAtmProfile(null); setStatus('idle');
       return;
     }
-
     let cancelled = false;
 
-    async function fetchData() {
+    async function fetchAll() {
       try {
-        const [aRes, fRes] = await Promise.all([
+        const [aRes, fRes, tRes, sRes, pRes] = await Promise.all([
           fetch(`/balloon/${serial}/analysis`),
           fetch(`/balloon/${serial}/forecast`),
+          fetch(`/balloon/${serial}/telemetry`),
+          fetch(`/atmosphere/status`),
+          fetch(`/atmosphere/profile`),
         ]);
-
-        if (!aRes.ok) throw new Error(`Analysis fetch failed: ${aRes.status}`);
         if (cancelled) return;
-
-        const aData = await aRes.json();
-        const fData = fRes.ok ? await fRes.json() : null;
-
+        if (!aRes.ok) throw new Error(`Analysis ${aRes.status}`);
+        const [aData, fData, tData, sData, pData] = await Promise.all([
+          aRes.json(),
+          fRes.ok ? fRes.json() : null,
+          tRes.ok ? tRes.json() : null,
+          sRes.ok ? sRes.json() : null,
+          pRes.ok ? pRes.json() : null,
+        ]);
         if (!cancelled) {
-          setAnalysis(aData);
-          setForecast(fData);
-          setStatus('live');
+          setAnalysis(aData); setForecast(fData); setTelemetry(tData);
+          setAtmStatus(sData); setAtmProfile(pData); setStatus('live');
         }
       } catch (err) {
-        if (!cancelled) {
-          setError(err.message);
-          setStatus('error');
-        }
+        if (!cancelled) { setError(err.message); setStatus('error'); }
       }
     }
 
-    setStatus('loading');
-    setError(null);
-    setAnalysis(null);
-    setForecast(null);
-
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-
-    fetchData().then(() => {
-      if (!cancelled) {
-        pollRef.current = setInterval(() => {
-          if (!cancelled) fetchData();
-        }, LIVE_POLL_MS);
-      }
+    setStatus('loading'); setError(null);
+    clearInterval(pollRef.current);
+    fetchAll().then(() => {
+      if (!cancelled)
+        pollRef.current = setInterval(() => { if (!cancelled) fetchAll(); }, LIVE_POLL_MS);
     });
-
-    return () => {
-      cancelled = true;
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
+    return () => { cancelled = true; clearInterval(pollRef.current); };
   }, [serial]);
+
+  const a = analysis;
+  const rk = riskKey(a?.storm_risk);
+  const profileRows = sampleProfile(atmProfile?.profile);
+  const modeColors = MODE_COLORS[atmStatus?.mode] ?? { bg: '#1e1e2e', text: '#666' };
+  const confPct = { high: 90, medium: 60, 'surface-only': 35, baseline: 15 }[atmStatus?.confidence] ?? 15;
+  const confColor = CONF_COLORS[atmStatus?.confidence] ?? '#666';
 
   return (
     <div className="scorecard-container">
@@ -202,63 +143,153 @@ export default function ScoreCard({ serial }) {
       </div>
 
       {status === 'loading' && (
-        <div className="chart-overlay">
-          <div className="spinner" />
-          <p>Fetching analysis...</p>
-        </div>
+        <div className="chart-overlay"><div className="spinner" /><p>Fetching analysis…</p></div>
       )}
-
       {status === 'error' && (
-        <div className="chart-overlay error">
-          <p>Error: {error}</p>
-        </div>
+        <div className="chart-overlay error"><p>Error: {error}</p></div>
+      )}
+      {status === 'idle' && (
+        <div className="chart-overlay"><p>Select a balloon to view instability metrics</p></div>
       )}
 
-      {status === 'idle' && !serial && (
-        <div className="chart-overlay">
-          <p>Select a balloon to view instability metrics</p>
-        </div>
-      )}
-
-      {analysis && (
+      {a && (
         <>
+          {/* ── Instability grid ──────────────────────────────────── */}
           <div className="metric-grid">
-            {TILES.map((tile) => {
-              let rawVal = analysis[tile.field];
-              if (tile.transform) rawVal = tile.transform(rawVal);
-              const display = tile.value ? tile.value(analysis) : formatValue(rawVal, tile.unit);
-              const colorKey = tile.color(analysis);
-              const badge = getBadge(colorKey);
-              const badgeText = tile.badgeLabel(analysis);
+            <MetricTile label="CAPE" value={fmt(a.cape, 'J/kg')}
+              badgeBg={getBadge(capeColor(a.cape))?.bg} badgeFg={getBadge(capeColor(a.cape))?.text}
+              badgeText={rk ? rk[0].toUpperCase() + rk.slice(1) : null} />
 
-              return (
-                <div key={tile.field} className="metric-tile">
-                  <span className="metric-label">{tile.label}</span>
-                  <span className="metric-value">{display}</span>
-                  {badge && badgeText && (
-                    <span
-                      className="metric-badge"
-                      style={{ background: badge.bg, color: badge.text }}
-                    >
-                      {badgeText}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
+            <MetricTile label="CIN" value={fmt(a.cin, 'J/kg')}
+              badgeBg="#1e1e2e" badgeFg="#666" badgeText="Info" />
+
+            <MetricTile label="Lapse Rate" value={fmt(a.lapse_rate_c_per_km, '°C/km')}
+              badgeBg={a.lapse_rate_c_per_km > 9.8 ? RISK_COLORS.extreme.bg : '#1a2a3a'}
+              badgeFg={a.lapse_rate_c_per_km > 9.8 ? RISK_COLORS.extreme.text : '#7eb3e8'}
+              badgeText={lapseLabel(a.lapse_rate_c_per_km)} />
+
+            <MetricTile label="Tropopause" value={fmt(a.tropopause_alt_km, 'km')} />
+
+            <MetricTile label="Precip Water" value={fmt(a.precipitable_water_mm, 'mm')}
+              badgeBg={a.precipitable_water_mm > 25 ? RISK_COLORS[a.precipitable_water_mm > 40 ? 'high' : 'moderate'].bg : null}
+              badgeFg={a.precipitable_water_mm > 25 ? RISK_COLORS[a.precipitable_water_mm > 40 ? 'high' : 'moderate'].text : null}
+              badgeText={precipLabel(a.precipitable_water_mm)} />
+
+            <MetricTile label="Storm Risk" value={a.storm_risk || '—'} small
+              badgeBg={rk ? RISK_COLORS[rk].bg : null} badgeFg={rk ? RISK_COLORS[rk].text : null}
+              badgeText={rk ? rk[0].toUpperCase() + rk.slice(1) : null} />
+
+            <MetricTile label="Surface Temp" value={fmt(a.surface_temp, '°C')} />
+
+            <MetricTile label="Max Altitude"
+              value={a.max_alt != null ? `${(a.max_alt / 1000).toFixed(1)} km` : '—'} />
+
+            {/* Radio frequency from telemetry */}
+            <MetricTile label="Frequency"
+              value={telemetry?.frequency_mhz != null ? `${telemetry.frequency_mhz} MHz` : '—'}
+              badgeBg="#1a1a3a" badgeFg="#cc88ff" badgeText={telemetry?.frequency_mhz ? 'RF' : null} />
+
+            <MetricTile label="Sonde Type"
+              value={telemetry?.sonde_type ?? a.sonde_type ?? '—'} small />
           </div>
 
-          {forecast && forecast.details && forecast.details.length > 0 && (
+          {/* ── Data Assimilation Status ──────────────────────────── */}
+          {atmStatus && (
+            <div className="sc-section">
+              <div className="sc-section-title">
+                Data Assimilation
+                <span className="sc-mode-badge" style={{ background: modeColors.bg, color: modeColors.text }}>
+                  {atmStatus.mode ?? 'unknown'}
+                </span>
+              </div>
+              <div className="sc-assim-grid">
+                <div className="sc-assim-item sc-assim-wide">
+                  <span className="sc-assim-key">Confidence</span>
+                  <div className="sc-conf-track">
+                    <div className="sc-conf-fill" style={{ width: `${confPct}%`, background: confColor }} />
+                  </div>
+                  <span className="sc-assim-val" style={{ color: confColor }}>{atmStatus.confidence ?? '—'}</span>
+                </div>
+                <div className="sc-assim-item">
+                  <span className="sc-assim-key">ELR</span>
+                  <span className="sc-assim-val">
+                    {atmStatus.lapse_rate_c_per_km != null ? `${atmStatus.lapse_rate_c_per_km.toFixed(2)} °C/km` : '—'}
+                  </span>
+                </div>
+                <div className="sc-assim-item">
+                  <span className="sc-assim-key">ELR Source</span>
+                  <span className="sc-assim-val">{atmStatus.lapse_rate_source ?? '—'}</span>
+                </div>
+                <div className="sc-assim-item">
+                  <span className="sc-assim-key">Balloon Age</span>
+                  <span className="sc-assim-val">
+                    {atmStatus.balloon_age_hours != null ? `${atmStatus.balloon_age_hours.toFixed(1)} h` : '—'}
+                  </span>
+                </div>
+                <div className="sc-assim-item">
+                  <span className="sc-assim-key">Surface Obs</span>
+                  <span className="sc-assim-val">{atmStatus.surface_obs_count ?? '—'}</span>
+                </div>
+                <div className="sc-assim-item">
+                  <span className="sc-assim-key">Station</span>
+                  <span className="sc-assim-val">{atmStatus.surface_station ?? '—'}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Vertical Interpolation Profile ───────────────────── */}
+          {profileRows.length > 0 && (
+            <div className="sc-section">
+              <div className="sc-section-title">Vertical Interpolation Profile</div>
+              <div className="sc-profile-scroll">
+                <table className="sc-profile-table">
+                  <thead>
+                    <tr><th>Alt</th><th>Temp</th><th>Press</th><th>RH</th><th>Wind</th><th>Src</th></tr>
+                  </thead>
+                  <tbody>
+                    {profileRows.map(row => (
+                      <tr key={row.altitude_m} className={row.source === 'assimilated' ? 'sc-row-assim' : ''}>
+                        <td>{(row.altitude_m / 1000).toFixed(1)} km</td>
+                        <td style={{ color: row.temp_c < -30 ? '#7eb3e8' : row.temp_c > 10 ? '#ff8844' : '#ccc' }}>
+                          {row.temp_c?.toFixed(1)}°C
+                        </td>
+                        <td>{row.pressure_hpa?.toFixed(0)} hPa</td>
+                        <td>{row.humidity_pct?.toFixed(0)}%</td>
+                        <td>{row.wind?.speed_ms?.toFixed(1)} m/s</td>
+                        <td className={row.source === 'assimilated' ? 'sc-src-assim' : 'sc-src-interp'}>
+                          {row.source === 'assimilated' ? '✓' : '~'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* ── Forecast ─────────────────────────────────────────── */}
+          {forecast?.details?.length > 0 && (
             <div className="forecast-section">
               <h3 className="forecast-heading">Forecast</h3>
               <ul className="forecast-list">
-                {forecast.details.map((d, i) => (
-                  <li key={i}>{d}</li>
-                ))}
+                {forecast.details.map((d, i) => <li key={i}>{d}</li>)}
               </ul>
             </div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+function MetricTile({ label, value, badgeBg, badgeFg, badgeText, small }) {
+  return (
+    <div className="metric-tile">
+      <span className="metric-label">{label}</span>
+      <span className="metric-value" style={small ? { fontSize: '0.78rem' } : undefined}>{value}</span>
+      {badgeText && badgeBg && (
+        <span className="metric-badge" style={{ background: badgeBg, color: badgeFg }}>{badgeText}</span>
       )}
     </div>
   );
