@@ -103,8 +103,7 @@ export default function Globe({ selectedSerial, scrubFrame }) {
         marker.bindPopup(
           `<b style="font-family:sans-serif">${b.serial}</b>` +
           `<br/>Alt: ${b.alt != null ? Math.round(b.alt) + ' m' : '?'}` +
-          `<br/>Temp: ${b.temp != null ? b.temp + ' °C' : '?'}` +
-          `<br/><span style="color:#4a6cf7;font-size:12px">Click to analyze →</span>`
+          `<br/>Temp: ${b.temp != null ? b.temp + ' °C' : '?'}`
         );
         marker.on('click', () => {
           document.dispatchEvent(
@@ -240,7 +239,7 @@ export default function Globe({ selectedSerial, scrubFrame }) {
 
       {mapReady && (
         <div className="globe-hint">
-          Scroll to zoom · drag to pan · click a marker to analyze
+          Scroll to zoom · drag to pan
         </div>
       )}
     </div>
