@@ -42,7 +42,15 @@ function subsample(arr, maxLen) {
   return result;
 }
 
-export default function SoundingChart({ serial }) {
+export default function SoundingChart({
+  source = 'balloon',
+  id = null,
+  serial = null,
+  stationTimeIndex = 0,
+  stationHeightIndex = 0,
+}) {
+  const selectedId = id ?? serial;
+  const isStation = source === 'station';
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const intervalRef = useRef(null);
@@ -54,7 +62,7 @@ export default function SoundingChart({ serial }) {
   const [liveCount, setLiveCount] = useState(0);
 
   useEffect(() => {
-    if (!serial) return;
+    if (!selectedId) return;
 
     let cancelled = false;
 
@@ -87,8 +95,16 @@ export default function SoundingChart({ serial }) {
 
       try {
         const [pathRes, analysisRes] = await Promise.all([
-          fetch(`/balloon/${serial}`),
-          fetch(`/balloon/${serial}/analysis`),
+          fetch(
+            isStation
+              ? `/station/${selectedId}/profile?time_index=${stationTimeIndex}`
+              : `/balloon/${selectedId}`
+          ),
+          fetch(
+            isStation
+              ? `/station/${selectedId}/analysis?time_index=${stationTimeIndex}`
+              : `/balloon/${selectedId}/analysis`
+          ),
         ]);
 
         if (!pathRes.ok) throw new Error(`Path fetch failed: ${pathRes.status}`);
@@ -103,6 +119,122 @@ export default function SoundingChart({ serial }) {
 
         if (allFrames.length === 0) {
           throw new Error('No frames with valid temperature + altitude data');
+        }
+
+        if (isStation) {
+          const frames = allFrames;
+          const allTemps = [];
+          const allDewpoints = [];
+          frames.forEach((f) => {
+            allTemps.push(f.temp);
+            const dp = calcDewpoint(f.temp, f.humidity);
+            if (dp != null) allDewpoints.push(dp);
+          });
+          const allTempValues = [...allTemps, ...allDewpoints];
+          const xMin = Math.floor(Math.min(...allTempValues) - 5);
+          const xMax = Math.ceil(Math.max(...allTempValues) + 5);
+          const maxAlt = Math.max(...frames.map((f) => f.alt));
+          const yMax = Math.ceil((maxAlt / 1000) * 1.1);
+          const selectedLevel = frames[Math.max(0, Math.min(stationHeightIndex, frames.length - 1))];
+
+          const chart = new ChartJS(canvasRef.current, {
+            type: 'line',
+            data: {
+              datasets: [
+                {
+                  label: 'Temperature (°C)',
+                  data: frames.map((f) => ({ x: f.temp, y: f.alt / 1000 })),
+                  borderColor: '#e8593c',
+                  backgroundColor: 'rgba(232, 89, 60, 0.05)',
+                  borderWidth: 2.5,
+                  pointRadius: 0,
+                  tension: 0.3,
+                  fill: false,
+                },
+                {
+                  label: 'Dewpoint (°C)',
+                  data: frames
+                    .map((f) => {
+                      const dp = calcDewpoint(f.temp, f.humidity);
+                      return dp != null ? { x: dp, y: f.alt / 1000 } : null;
+                    })
+                    .filter(Boolean),
+                  borderColor: '#3b8bd4',
+                  backgroundColor: 'rgba(59, 139, 212, 0.05)',
+                  borderWidth: 2,
+                  pointRadius: 0,
+                  tension: 0.3,
+                  borderDash: [4, 2],
+                  fill: false,
+                },
+              ],
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              animation: false,
+              parsing: false,
+              normalized: true,
+              scales: {
+                x: {
+                  type: 'linear',
+                  min: xMin,
+                  max: xMax,
+                  title: { display: true, text: 'Temperature (°C)', color: '#444', font: { size: 13 } },
+                  grid: { color: 'rgba(0,0,0,0.07)' },
+                  ticks: { color: '#666' },
+                },
+                y: {
+                  type: 'linear',
+                  min: 0,
+                  max: yMax,
+                  title: { display: true, text: 'Altitude (km)', color: '#444', font: { size: 13 } },
+                  grid: { color: 'rgba(0,0,0,0.07)' },
+                  ticks: { color: '#666' },
+                },
+              },
+              plugins: {
+                legend: { labels: { color: '#444', usePointStyle: true, pointStyle: 'line' } },
+                tooltip: {
+                  callbacks: {
+                    label: (ctx) =>
+                      `${ctx.dataset.label || ''}: ${ctx.parsed.x.toFixed(1)}°C at ${ctx.parsed.y.toFixed(1)} km`,
+                  },
+                },
+                annotation: {
+                  annotations: selectedLevel
+                    ? {
+                        selectedHeight: {
+                          type: 'line',
+                          yMin: selectedLevel.alt / 1000,
+                          yMax: selectedLevel.alt / 1000,
+                          borderColor: '#2f9e44',
+                          borderWidth: 1.5,
+                          borderDash: [3, 3],
+                          label: {
+                            display: true,
+                            content: `Selected ${(selectedLevel.alt / 1000).toFixed(1)} km`,
+                            color: '#1f7a35',
+                            backgroundColor: 'rgba(255, 255, 255, 0.85)',
+                            font: { size: 11 },
+                            position: 'end',
+                          },
+                        },
+                      }
+                    : {},
+                },
+                zoom: {
+                  pan: { enabled: true, mode: 'xy' },
+                  zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy' },
+                },
+              },
+            },
+          });
+
+          chartRef.current = chart;
+          setProgress({ current: frames.length, total: frames.length });
+          setStatus('done');
+          return;
         }
 
         const frames = subsample(allFrames, MAX_ANIMATION_FRAMES);
@@ -247,8 +379,12 @@ export default function SoundingChart({ serial }) {
             }
 
             if (!cancelled) {
-              setStatus('live');
-              startLivePolling(chart, serial, tropopauseKm);
+              if (isStation) {
+                setStatus('done');
+              } else {
+                setStatus('live');
+                startLivePolling(chart, selectedId, tropopauseKm);
+              }
             }
             return;
           }
@@ -362,7 +498,7 @@ export default function SoundingChart({ serial }) {
       cancelled = true;
       cleanup();
     };
-  }, [serial]);
+  }, [selectedId, isStation, stationTimeIndex, stationHeightIndex]);
 
   const pct = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
 
@@ -370,7 +506,7 @@ export default function SoundingChart({ serial }) {
     <div className="sounding-chart-container">
       <div className="chart-header">
         <h2>Sounding Chart</h2>
-        {serial && <span className="serial-tag">{serial}</span>}
+        {selectedId && <span className="serial-tag">{selectedId}{isStation ? ' (station)' : ''}</span>}
         {status === 'animating' && (
           <span className="progress-badge">
             {progress.current}/{progress.total} frames ({pct}%)
@@ -397,9 +533,9 @@ export default function SoundingChart({ serial }) {
         </div>
       )}
 
-      {status === 'idle' && !serial && (
+      {status === 'idle' && !selectedId && (
         <div className="chart-overlay">
-          <p>Select a balloon to view its sounding profile</p>
+          <p>Select a balloon or ground station to view its profile</p>
         </div>
       )}
 

@@ -8,6 +8,7 @@ import threading
 import time
 import os
 from dotenv import load_dotenv
+from interpolation import generate_full_profile
 
 # Auto-load environment variables from .env in repository root
 load_dotenv()
@@ -179,6 +180,152 @@ def parse_timeseries_for_assimilation(raw):
 
     return records
 
+
+def estimate_relative_humidity(temp_c, dewpoint_c):
+    if temp_c is None or dewpoint_c is None:
+        return None
+    try:
+        # Convert T/Td to RH (%) using Magnus approximation.
+        expo = ((17.625 * dewpoint_c) / (243.04 + dewpoint_c)) - ((17.625 * temp_c) / (243.04 + temp_c))
+        rh = 100.0 * math.exp(expo)
+        return max(0.0, min(100.0, round(rh, 2)))
+    except Exception:
+        return None
+
+
+def _build_station_hybrid_dataset(stid: str, recent_minutes: int = 180):
+    raw = fetch_station_timeseries(stid, recent_minutes=recent_minutes)
+    if not raw:
+        return None, "No weather data found for station"
+
+    parsed = parse_timeseries_for_assimilation(raw)
+    if not parsed:
+        return None, "No parsed observations found for station"
+
+    station = (raw.get('STATION') or [{}])[0]
+    lat = station.get('LATITUDE')
+    lon = station.get('LONGITUDE')
+
+    snapshots = []
+    for obs in parsed:
+        temp_c = obs.get('temp_c')
+        elev_m = obs.get('elev_m')
+        if temp_c is None or elev_m is None:
+            continue
+
+        dewpoint_c = obs.get('dewpoint_c')
+        pressure_hpa = obs.get('pressure_hpa')
+        wind_speed_ms = obs.get('wind_speed_ms')
+        wind_dir_deg = obs.get('wind_dir_deg')
+
+        surface = {
+            'temp_c': temp_c,
+            'dewpoint_c': dewpoint_c if dewpoint_c is not None else temp_c - 4.0,
+            'pressure_hpa': pressure_hpa if pressure_hpa is not None else 1013.25,
+            'elev_m': elev_m,
+            'wind_speed_ms': wind_speed_ms if wind_speed_ms is not None else 2.0,
+            'wind_dir_deg': wind_dir_deg if wind_dir_deg is not None else 180.0,
+            'elr': 6.5,
+            'dewpoint_lapse': 2.0,
+        }
+        profile = generate_full_profile(surface, max_alt=20000, step=500)
+        levels = []
+        for p in profile:
+            levels.append({
+                'lat': lat,
+                'lon': lon,
+                'alt': p.get('altitude_m'),
+                'temp': p.get('temp_c'),
+                'pressure_hpa': p.get('pressure_hpa'),
+                'humidity': p.get('humidity_pct'),
+                'dewpoint': p.get('dewpoint_c'),
+                'datetime': obs.get('datetime_utc'),
+                'wind_speed_ms': (p.get('wind') or {}).get('speed_ms'),
+                'wind_dir_deg': (p.get('wind') or {}).get('direction_deg'),
+                'source': p.get('source', 'interpolated'),
+            })
+
+        if not levels:
+            continue
+
+        frame_like = [
+            {
+                "alt": lv["alt"],
+                "temp": lv["temp"],
+                "humidity": lv["humidity"],
+                "datetime": lv["datetime"],
+            }
+            for lv in levels
+            if lv["alt"] is not None and lv["temp"] is not None
+        ]
+
+        lapse = calc_lapse_rate(frame_like)
+        tropo = find_tropopause(frame_like)
+        cape, cin, risk = calc_cape_cin(frame_like)
+        pw = calc_precipitable_water(frame_like)
+
+        wind_profile = []
+        for lv in levels:
+            ws = lv.get("wind_speed_ms")
+            wd = lv.get("wind_dir_deg")
+            alt = lv.get("alt")
+            if ws is None or wd is None or alt is None:
+                continue
+            wind_profile.append({
+                "alt": alt,
+                "speed_ms": round(float(ws), 2),
+                "speed_knots": round(float(ws) * 1.94384, 1),
+                "direction_deg": round(float(wd), 1),
+            })
+
+        analysis = {
+            "serial": stid,
+            "frame_count": len(frame_like),
+            "lapse_rate_c_per_km": lapse,
+            "tropopause_alt_m": tropo,
+            "tropopause_alt_km": round(tropo / 1000, 1) if tropo else None,
+            "cape": cape,
+            "cin": cin,
+            "storm_risk": risk,
+            "precipitable_water_mm": pw,
+            "wind_profile": wind_profile,
+            "surface_temp": temp_c,
+            "max_alt": max((lv.get("alt") or 0) for lv in levels),
+            "sonde_type": "synoptic_station_hybrid",
+            "snapshot_time": obs.get('datetime_utc'),
+        }
+
+        snapshots.append({
+            "datetime": obs.get('datetime_utc'),
+            "observed_surface": obs,
+            "levels": levels,
+            "analysis": analysis,
+        })
+
+    if not snapshots:
+        return None, "No valid station snapshots generated"
+
+    return {
+        "serial": stid,
+        "lat": lat,
+        "lon": lon,
+        "times": [s["datetime"] for s in snapshots],
+        "snapshots": snapshots,
+        "snapshot_count": len(snapshots),
+        "source": "synoptic_station_hybrid",
+    }, None
+
+
+def _select_snapshot(hybrid_data, time_index):
+    snapshots = hybrid_data.get("snapshots") or []
+    if not snapshots:
+        return None, -1
+    idx = time_index
+    if idx is None:
+        idx = len(snapshots) - 1
+    idx = max(0, min(int(idx), len(snapshots) - 1))
+    return snapshots[idx], idx
+
 # ─── SONDEHUB FETCH ──────────────────────────────────────────────────────────
 def fetch_all_balloons():
     try:
@@ -321,56 +468,119 @@ def calc_wind_profile(frames):
     return winds
 
 
+def _calc_dewpoint_c(temp_c, rh_pct):
+    """Estimate dewpoint from temperature and relative humidity."""
+    if temp_c is None:
+        return None
+    if rh_pct is None:
+        return temp_c - 8.0
+
+    try:
+        rh = max(1.0, min(float(rh_pct), 100.0))
+        alpha = math.log(rh / 100.0) + ((17.625 * temp_c) / (243.04 + temp_c))
+        return (243.04 * alpha) / (17.625 - alpha)
+    except (ValueError, ZeroDivisionError):
+        return temp_c - 8.0
+
+
+def _estimate_pressure_hpa(alt_m, surface_alt_m, surface_pressure_hpa=1013.25):
+    """Estimate pressure with a simple scale-height approximation."""
+    dz = max(0.0, alt_m - surface_alt_m)
+    return surface_pressure_hpa * math.exp(-dz / 8434.5)
+
+
+def _moist_adiabatic_lapse_rate_c_per_km(temp_c, pressure_hpa):
+    """
+    Estimate moist adiabatic lapse rate in C/km.
+    Uses a pseudoadiabatic approximation and clamps the result to a
+    reasonable range to keep the simplified CAPE demo stable.
+    """
+    temp_k = temp_c + 273.15
+    pressure_hpa = max(pressure_hpa, 100.0)
+
+    es = 6.112 * math.exp(17.67 * temp_c / (temp_c + 243.5))
+    es = min(es, pressure_hpa - 1e-6)
+    epsilon = 0.622
+    mixing_ratio = epsilon * es / max(pressure_hpa - es, 1e-6)
+
+    g = 9.81
+    latent_heat = 2.5e6
+    gas_constant_dry = 287.05
+    specific_heat = 1004.0
+
+    numerator = g * (1.0 + (latent_heat * mixing_ratio) / (gas_constant_dry * temp_k))
+    denominator = specific_heat + (
+        (latent_heat ** 2) * mixing_ratio * epsilon / (gas_constant_dry * temp_k ** 2)
+    )
+    lapse_rate_c_per_km = (numerator / denominator) * 1000.0
+    return min(max(lapse_rate_c_per_km, 4.0), 9.0)
+
+
 def calc_cape_cin(frames):
     """
     Simplified CAPE/CIN estimation from temperature profile.
     Uses parcel theory - compares environmental temp to lifted parcel temp.
     Returns CAPE (J/kg) and CIN (J/kg) estimates and a risk label.
     """
-    points = [(f["alt"], f["temp"]) for f in frames
-              if f.get("temp") is not None and f.get("alt") is not None]
+    points = [
+        (f["alt"], f["temp"], f.get("humidity"))
+        for f in frames
+        if f.get("temp") is not None and f.get("alt") is not None
+    ]
     if len(points) < 5:
         return None, None, "insufficient data"
 
     points.sort(key=lambda x: x[0])
 
     # Surface conditions
-    surface_temp = points[0][1]
-    surface_alt = points[0][0]
+    surface_alt, surface_temp, surface_rh = points[0]
+    surface_dewpoint = _calc_dewpoint_c(surface_temp, surface_rh)
 
     # Dry adiabatic lapse rate = 9.8 C/km
-    # Moist adiabatic lapse rate = ~6 C/km
     DALR = 9.8
-    MALR = 6.0
 
     cape = 0.0
     cin = 0.0
     g = 9.81
 
-    # Assume LCL (lifting condensation level) at ~500m above surface
-    lcl_alt = surface_alt + 500
+    # Use humidity to estimate the LCL instead of hardcoding it.
+    lcl_offset_m = max(125.0 * max(surface_temp - surface_dewpoint, 0.0), 100.0)
+    lcl_alt = surface_alt + lcl_offset_m
+    parcel_temp = surface_temp
+    found_positive_buoyancy = False
 
     for i in range(len(points) - 1):
-        alt0, temp_env0 = points[i]
-        alt1, temp_env1 = points[i + 1]
-        dz = (alt1 - alt0)
-        mid_alt = (alt0 + alt1) / 2
-        mid_env_temp = (temp_env0 + temp_env1) / 2
+        alt0, temp_env0, _ = points[i]
+        alt1, temp_env1, _ = points[i + 1]
+        dz = alt1 - alt0
+        if dz <= 0:
+            continue
 
-        # Parcel temperature at this altitude
-        if mid_alt < lcl_alt:
-            parcel_temp = surface_temp - DALR * (mid_alt - surface_alt) / 1000
+        mid_alt = (alt0 + alt1) / 2.0
+        mid_env_temp = (temp_env0 + temp_env1) / 2.0
+
+        if mid_alt <= lcl_alt:
+            lapse_rate = DALR
         else:
-            parcel_temp = surface_temp - DALR * (lcl_alt - surface_alt) / 1000
-            parcel_temp -= MALR * (mid_alt - lcl_alt) / 1000
+            pressure_hpa = _estimate_pressure_hpa(mid_alt, surface_alt)
+            lapse_rate = _moist_adiabatic_lapse_rate_c_per_km(parcel_temp, pressure_hpa)
 
-        temp_diff = parcel_temp - mid_env_temp
+        parcel_temp_next = parcel_temp - lapse_rate * dz / 1000.0
+        parcel_temp_mid = (parcel_temp + parcel_temp_next) / 2.0
+        temp_diff = parcel_temp_mid - mid_env_temp
 
         if temp_diff > 0:
+            found_positive_buoyancy = True
             cape += g * (temp_diff / (mid_env_temp + 273.15)) * dz
         else:
-            if cape == 0:
+            if not found_positive_buoyancy:
                 cin += g * (temp_diff / (mid_env_temp + 273.15)) * dz
+            else:
+                # Stop at the first equilibrium level so upper-level layers
+                # do not keep inflating CAPE in this simplified model.
+                break
+
+        parcel_temp = parcel_temp_next
 
     cape = round(max(cape, 0), 1)
     cin = round(cin, 1)
@@ -686,6 +896,65 @@ def search_weather_stations():
         stations = [s for s in stations if s.get('STATE') == query.upper()]
 
     return jsonify({"stations": stations[:limit]})
+
+
+@app.route("/station/<stid>/profile")
+def get_station_profile(stid):
+    if not SYNOPTIC_TOKEN:
+        return jsonify({"error": "Synoptic Data not configured. Set SYNOPTIC_TOKEN environment variable."}), 503
+
+    recent = request.args.get('recent', default=180, type=int)
+    time_index = request.args.get('time_index', default=None, type=int)
+    hybrid, err = _build_station_hybrid_dataset(stid, recent_minutes=recent)
+    if not hybrid:
+        return jsonify({"error": err}), 404
+    snapshot, idx = _select_snapshot(hybrid, time_index)
+    if snapshot is None:
+        return jsonify({"error": "No station snapshots available"}), 404
+
+    return jsonify({
+        "serial": stid,
+        "point_count": len(snapshot["levels"]),
+        "path": snapshot["levels"],
+        "source": "synoptic_station_hybrid",
+        "selected_time_index": idx,
+        "selected_time": snapshot["datetime"],
+        "times": hybrid["times"],
+    })
+
+
+@app.route("/station/<stid>/analysis")
+def get_station_analysis(stid):
+    if not SYNOPTIC_TOKEN:
+        return jsonify({"error": "Synoptic Data not configured. Set SYNOPTIC_TOKEN environment variable."}), 503
+
+    recent = request.args.get('recent', default=180, type=int)
+    time_index = request.args.get('time_index', default=None, type=int)
+    hybrid, err = _build_station_hybrid_dataset(stid, recent_minutes=recent)
+    if not hybrid:
+        return jsonify({"error": err}), 404
+    snapshot, idx = _select_snapshot(hybrid, time_index)
+    if snapshot is None:
+        return jsonify({"error": "No station snapshots available"}), 404
+
+    analysis = dict(snapshot["analysis"])
+    analysis["selected_time_index"] = idx
+    analysis["selected_time"] = snapshot["datetime"]
+    analysis["times"] = hybrid["times"]
+    return jsonify(analysis)
+
+
+@app.route("/station/<stid>/hybrid")
+def get_station_hybrid(stid):
+    if not SYNOPTIC_TOKEN:
+        return jsonify({"error": "Synoptic Data not configured. Set SYNOPTIC_TOKEN environment variable."}), 503
+
+    recent = request.args.get('recent', default=180, type=int)
+    hybrid, err = _build_station_hybrid_dataset(stid, recent_minutes=recent)
+    if not hybrid:
+        return jsonify({"error": err}), 404
+
+    return jsonify(hybrid)
 
 
 @app.route("/status")
