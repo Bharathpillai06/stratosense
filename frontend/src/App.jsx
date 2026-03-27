@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import SoundingChart from './components/SoundingChart';
 import WindBarbs from './components/WindBarbs';
 import ScoreCard from './components/ScoreCard';
+import ModelCard from './components/ModelCard';
 import './App.css';
 
 export default function App() {
@@ -119,6 +120,7 @@ export default function App() {
         <SoundingChart serial={activeSerial} />
         <WindBarbs serial={activeSerial} />
         <ScoreCard serial={activeSerial} />
+        <ModelCard serial={activeSerial} />
       </main>
     </div>
   );
