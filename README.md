@@ -66,6 +66,9 @@ git clone https://github.com/rishivarshil/stratosense.git
 cd stratosense
 ```
 
+### 2. Obtain API key from Synoptic
+Visit [Synoptic Weather API](https://synopticdata.com/weatherapi/), create an account and start a free trial. Create a private key and public token. Copy the public token and paste it into src/.env after "SYNOPTIC_TOKEN=". Do not share your public key, and make sure to end your free trial before the 14-day window ends if you do not wish to pay.
+
 ### 2. Create and activate a Python virtual environment
 
 #### Windows PowerShell
